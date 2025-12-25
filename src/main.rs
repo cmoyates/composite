@@ -188,7 +188,7 @@ pub fn s_init(mut commands: Commands, pathfinding: ResMut<ai::pathfinding::Pathf
             current_path_index: 0,
         },
         PursueAI {
-            state: PursueAIState::Wander,
+            state: PursueAIState::Pursue,  // Start in Pursue mode
             current_wander_goal: None,
         },
     ));

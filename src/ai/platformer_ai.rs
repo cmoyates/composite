@@ -3,8 +3,9 @@ use bevy::{
     color::Color,
     ecs::{
         component::Component,
+        query::With,
         schedule::IntoScheduleConfigs,
-        system::{Query, Res},
+        system::{ParamSet, Query, Res},
     },
     gizmos::gizmos::Gizmos,
     math::{Vec2, Vec3Swizzles},
@@ -71,6 +72,7 @@ impl Plugin for PlatformerAIPlugin {
 
 #[derive(Component)]
 pub struct PlatformerAI {
+    #[allow(dead_code)]
     pub current_target_node: Option<usize>,
     pub jump_from_pos: Option<Vec2>,
     pub jump_to_pos: Option<Vec2>,
@@ -94,28 +96,49 @@ pub struct AIPhysics {
 }
 
 pub fn s_platformer_ai_movement(
-    mut platformer_ai_query: Query<(
-        &mut Transform,
-        &mut AIPhysics,
-        &mut PlatformerAI,
-        &crate::ai::pursue_ai::PursueAI,
+    mut queries: ParamSet<(
+        Query<(
+            &mut Transform,
+            &mut AIPhysics,
+            &mut PlatformerAI,
+            &crate::ai::pursue_ai::PursueAI,
+        )>,
+        Query<&Transform, With<crate::Player>>,
     )>,
     pathfinding: Res<PathfindingGraph>,
     gizmos_visible: Res<crate::GizmosVisible>,
     time: Res<Time>,
     mut gizmos: Gizmos,
 ) {
-    for (mut transform, mut physics, mut platformer_ai, pursue_ai) in platformer_ai_query.iter_mut()
+    // Get player position for Pursue state (read-only query)
+    let player_pos = queries.p1().single().map(|t| t.translation.xy()).ok();
+
+    // Process AI entities (mutable query)
+    for (mut transform, mut physics, mut platformer_ai, pursue_ai) in queries.p0().iter_mut()
     {
-        // Get goal position from wander state
-        let goal_pos = if let Some(wander_node_id) = pursue_ai.current_wander_goal {
-            if let Some(wander_node) = pathfinding.nodes.get(wander_node_id) {
-                wander_node.position
-            } else {
-                Vec2::ZERO
+        // Get goal position based on AI state
+        let goal_pos = match pursue_ai.state {
+            crate::ai::pursue_ai::PursueAIState::Pursue => {
+                // In Pursue state, use player position as goal
+                // If player doesn't exist, skip this AI entity
+                match player_pos {
+                    Some(pos) => pos,
+                    None => continue,
+                }
             }
-        } else {
-            Vec2::ZERO
+            crate::ai::pursue_ai::PursueAIState::Wander => {
+                // In Wander state, use wander goal node
+                if let Some(wander_node_id) = pursue_ai.current_wander_goal {
+                    if let Some(wander_node) = pathfinding.nodes.get(wander_node_id) {
+                        wander_node.position
+                    } else {
+                        Vec2::ZERO
+                    }
+                } else {
+                    Vec2::ZERO
+                }
+            }
+            _ => Vec2::ZERO, // Other states not implemented yet
         };
 
         let (move_dir, jump_velocity, jump_from_node, jump_to_node) = get_move_inputs(
@@ -242,8 +265,13 @@ fn get_move_inputs(
         // Use current_path_index to get the current and next nodes
         let current_idx = platformer_ai.current_path_index;
         
+        // Early return if path is empty
+        if path.is_empty() {
+            return (move_dir, jump_velocity, jump_from_node, jump_to_node);
+        }
+        
         // Check if we're at the final node in the path
-        let is_at_final_node = current_idx >= path.len() - 1;
+        let is_at_final_node = current_idx >= path.len().saturating_sub(1);
         
         if current_idx < path.len() {
             if !is_at_final_node && path.len() > current_idx + 1 {
@@ -408,13 +436,18 @@ fn should_recalculate_path(
 }
 
 fn advance_path_index(platformer_ai: &mut PlatformerAI, agent_position: Vec2, path: &[PathNode]) {
+    // Early return if path is empty
+    if path.is_empty() {
+        return;
+    }
+    
     // Advance index if agent reached current node
     while platformer_ai.current_path_index < path.len() {
         let current_node = &path[platformer_ai.current_path_index];
         let distance_sq = (agent_position - current_node.position).length_squared();
 
         // Use larger threshold for final node to match wander goal threshold
-        let is_final_node = platformer_ai.current_path_index >= path.len() - 1;
+        let is_final_node = platformer_ai.current_path_index >= path.len().saturating_sub(1);
         let threshold = if is_final_node {
             FINAL_GOAL_REACHED_THRESHOLD_SQ
         } else {

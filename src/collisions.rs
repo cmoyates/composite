@@ -11,7 +11,7 @@ use bevy::{
 };
 
 use crate::{
-    ai::platformer_ai::AIPhysics,
+    ai::platformer_ai::{AIPhysics, s_platformer_ai_movement},
     level::{Aabb, Level},
     s_movement, Physics, Player, CEILING_NORMAL_Y_THRESHOLD,
     GROUND_NORMAL_Y_THRESHOLD, MAX_GROUNDED_TIMER, MAX_WALLED_TIMER, NORMAL_DOT_THRESHOLD,
@@ -29,7 +29,7 @@ pub struct CollisionPlugin;
 impl Plugin for CollisionPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, s_collision.after(s_movement));
-        app.add_systems(Update, s_ai_collision);
+        app.add_systems(Update, s_ai_collision.after(s_platformer_ai_movement));
     }
 }
 

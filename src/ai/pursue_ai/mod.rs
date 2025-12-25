@@ -5,8 +5,10 @@ use bevy::{
     app::{App, Plugin, Update},
     ecs::{
         component::Component,
-        system::{Query, Res},
+        query::With,
+        system::{ParamSet, Query, Res},
     },
+    math::Vec3Swizzles,
     transform::components::Transform,
 };
 
@@ -37,18 +39,53 @@ pub struct PursueAI {
 }
 
 pub fn s_pursue_ai_update(
-    mut platformer_ai_query: Query<(&mut Transform, &mut AIPhysics, &mut PursueAI)>,
+    mut queries: ParamSet<(
+        Query<(&mut Transform, &mut AIPhysics, &mut PursueAI)>,
+        Query<&Transform, With<crate::Player>>,
+    )>,
     pathfinding: Res<PathfindingGraph>,
 ) {
-    for (mut transform, mut physics, mut pursue_ai) in platformer_ai_query.iter_mut() {
+    // Get player position for detection (read-only query)
+    let player_pos = queries.p1().single().map(|t| t.translation.xy()).ok();
+
+    // Process AI entities (mutable query)
+    for (mut transform, mut physics, mut pursue_ai) in queries.p0().iter_mut() {
+        let ai_pos = transform.translation.xy();
+        
+        // Simple distance-based detection: if player is within range, pursue
+        const DETECTION_RANGE_SQ: f32 = 500.0 * 500.0; // 500 pixels detection range
+        
+        let should_pursue = if let Some(player_position) = player_pos {
+            let distance_sq = (ai_pos - player_position).length_squared();
+            distance_sq <= DETECTION_RANGE_SQ
+        } else {
+            false
+        };
+
         let next_state: Option<PursueAIState> = match pursue_ai.state {
-            PursueAIState::Wander => wander::wander_update(
-                &mut transform,
-                &mut physics,
-                &mut pursue_ai,
-                pathfinding.as_ref(),
-            ),
-            // PursueAIState::Pursue => {}
+            PursueAIState::Wander => {
+                if should_pursue {
+                    // Transition to Pursue when player detected
+                    Some(PursueAIState::Pursue)
+                } else {
+                    // Continue wandering
+                    wander::wander_update(
+                        &mut transform,
+                        &mut physics,
+                        &mut pursue_ai,
+                        pathfinding.as_ref(),
+                    )
+                }
+            }
+            PursueAIState::Pursue => {
+                if !should_pursue {
+                    // Transition back to Wander if player is out of range
+                    Some(PursueAIState::Wander)
+                } else {
+                    // Continue pursuing
+                    None
+                }
+            }
             // PursueAIState::Search => {}
             // PursueAIState::Attack => {}
             _ => None,
