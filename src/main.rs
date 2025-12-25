@@ -1,9 +1,15 @@
+mod ai;
 mod collisions;
 mod level;
 mod utils;
 
 use ::bevy::prelude::*;
 use bevy::{app::AppExit, input::ButtonInput, window::PresentMode};
+use ai::{
+    pathfinding::{init_pathfinding_graph, PathfindingPlugin},
+    platformer_ai::{AIPhysics, PlatformerAI, PlatformerAIPlugin},
+    pursue_ai::{PursueAI, PursueAIState, PursueAIPlugin, PURSUE_AI_AGENT_RADIUS},
+};
 use collisions::{s_collision, s_debug_collision, CollisionPlugin};
 use level::{generate_level_polygons, Level};
 
@@ -15,6 +21,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.0, 0.0, 0.0)))
         .insert_resource(InputDir { dir: Vec2::ZERO })
         .insert_resource(ShouldExit(false))
+        .insert_resource(GizmosVisible { visible: false })
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Advanced Character Controller".to_string(),
@@ -24,10 +31,14 @@ fn main() {
             ..default()
         }))
         .add_plugins(CollisionPlugin)
+        .add_plugins(PathfindingPlugin)
+        .add_plugins(PlatformerAIPlugin)
+        .add_plugins(PursueAIPlugin)
         // Startup systems
         .add_systems(Startup, s_init)
         // Update systems
         .add_systems(Update, s_input)
+        .add_systems(Update, s_handle_gizmo_toggle)
         .add_systems(Update, s_movement.after(s_input))
         .add_systems(Update, s_timers.after(s_collision))
         .add_systems(Update, s_debug_collision.after(s_collision))
@@ -44,6 +55,11 @@ pub struct InputDir {
 
 #[derive(Resource)]
 pub struct ShouldExit(bool);
+
+#[derive(Resource)]
+pub struct GizmosVisible {
+    pub visible: bool,
+}
 
 // Movement constants (units: pixels/second)
 // Converted from 5.0 pixels/frame at 60fps = 300.0 pixels/second
@@ -123,7 +139,7 @@ pub struct Physics {
 }
 
 /// Initial setup system
-pub fn s_init(mut commands: Commands) {
+pub fn s_init(mut commands: Commands, pathfinding: ResMut<ai::pathfinding::PathfindingGraph>) {
     // Spawn camera
     commands.spawn((Camera2d, Transform::default()));
 
@@ -149,11 +165,42 @@ pub fn s_init(mut commands: Commands) {
         },
     ));
 
+    // Spawn AI agent
+    let ai_initial_position = Vec3::new(0.0, -250.0, 0.0);
+    commands.spawn((
+        Transform::from_translation(ai_initial_position),
+        AIPhysics {
+            prev_position: ai_initial_position.xy(),
+            velocity: Vec2::ZERO,
+            acceleration: Vec2::ZERO,
+            radius: PURSUE_AI_AGENT_RADIUS,
+            normal: Vec2::ZERO,
+            grounded: false,
+            walled: 0,
+            has_wall_jumped: false,
+        },
+        PlatformerAI {
+            current_target_node: None,
+            jump_from_pos: None,
+            jump_to_pos: None,
+            cached_path: None,
+            last_goal_position: None,
+            current_path_index: 0,
+        },
+        PursueAI {
+            state: PursueAIState::Wander,
+            current_wander_goal: None,
+        },
+    ));
+
     // Init level
     {
         let grid_size = 32.0;
 
         let level = generate_level_polygons(grid_size);
+
+        // Initialize pathfinding graph
+        init_pathfinding_graph(&level, pathfinding);
 
         commands.insert_resource(level);
     }
@@ -339,20 +386,30 @@ pub fn s_movement(
 pub fn s_render(
     mut gizmos: Gizmos,
     player_query: Query<(&Transform, &Physics), With<Player>>,
+    ai_query: Query<(&Transform, &AIPhysics), With<PursueAI>>,
     level: Res<Level>,
 ) {
+    // Draw level
+    for polygon in &level.polygons {
+        gizmos.linestrip_2d(polygon.points.iter().copied(), polygon.color);
+    }
+
+    // Draw player
     if let Ok((player_transform, player_physics)) = player_query.single() {
-        // Draw player
         gizmos.circle_2d(
             player_transform.translation.xy(),
             player_physics.radius,
             Color::WHITE,
         );
+    }
 
-        // Draw level
-        for polygon in &level.polygons {
-            gizmos.linestrip_2d(polygon.points.iter().copied(), polygon.color);
-        }
+    // Draw AI agents
+    for (ai_transform, ai_physics) in ai_query.iter() {
+        gizmos.circle_2d(
+            ai_transform.translation.xy(),
+            ai_physics.radius,
+            Color::srgb(1.0, 0.0, 0.0), // Red for AI
+        );
     }
 }
 
@@ -387,6 +444,17 @@ pub fn s_timers(time: Res<Time>, mut player_query: Query<&mut Player>) {
                 player_data.wall_direction = 0.0;
             }
         }
+    }
+}
+
+/// Gizmo toggle system: Toggles debug gizmo visibility with G key
+pub fn s_handle_gizmo_toggle(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut gizmos_visible: ResMut<GizmosVisible>,
+) {
+    // G to toggle gizmos
+    if keyboard_input.just_pressed(KeyCode::KeyG) {
+        gizmos_visible.visible = !gizmos_visible.visible;
     }
 }
 

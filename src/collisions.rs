@@ -11,6 +11,7 @@ use bevy::{
 };
 
 use crate::{
+    ai::platformer_ai::AIPhysics,
     level::{Aabb, Level},
     s_movement, Physics, Player, CEILING_NORMAL_Y_THRESHOLD,
     GROUND_NORMAL_Y_THRESHOLD, MAX_GROUNDED_TIMER, MAX_WALLED_TIMER, NORMAL_DOT_THRESHOLD,
@@ -28,6 +29,7 @@ pub struct CollisionPlugin;
 impl Plugin for CollisionPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, s_collision.after(s_movement));
+        app.add_systems(Update, s_ai_collision);
     }
 }
 
@@ -273,5 +275,134 @@ pub fn line_intersect(
 
 pub fn cross_product(a: Vec2, b: Vec2) -> f32 {
     a.x * b.y - a.y * b.x
+}
+
+/// AI collision system: Similar to s_collision but for AI entities with AIPhysics
+pub fn s_ai_collision(
+    mut ai_query: Query<(&mut Transform, &mut AIPhysics)>,
+    level: Res<Level>,
+) {
+    for (mut ai_transform, mut ai_physics) in ai_query.iter_mut() {
+        let mut adjustment = Vec2::ZERO;
+        let mut new_ai_normal = Vec2::ZERO;
+
+        // Pre-compute AI AABB for broad-phase collision detection
+        let ai_pos = ai_transform.translation.xy();
+        let ai_aabb = Aabb::from_point_radius(ai_pos, ai_physics.radius);
+        // Expand AABB slightly to account for movement
+        let expanded_ai_aabb = ai_aabb.expand(ai_physics.radius * 0.5);
+
+        // Pre-compute radius squared to avoid repeated calculations
+        let radius_sq = ai_physics.radius.powi(2);
+        let touch_threshold_sq = (ai_physics.radius + TOUCH_THRESHOLD).powi(2);
+
+        for polygon in &level.polygons {
+            // Broad-phase: AABB pre-check to skip polygons far from AI
+            if !expanded_ai_aabb.overlaps(&polygon.aabb) {
+                continue;
+            }
+
+            let mut intersect_counter = 0;
+            let mut colliding_with_polygon = false;
+
+            // Raycast intersection check for point-in-polygon test
+            for i in 1..polygon.points.len() {
+                let start = polygon.points[i - 1];
+                let end = polygon.points[i];
+
+                let intersection = line_intersect(
+                    start,
+                    end,
+                    ai_pos,
+                    ai_pos + RAYCAST_DIRECTION * RAYCAST_DIRECTION_SCALE,
+                );
+
+                if intersection.is_some() {
+                    intersect_counter += 1;
+                }
+            }
+
+            // Narrow-phase: detailed collision detection with polygon edges
+            for i in 1..polygon.points.len() {
+                let start = polygon.points[i - 1];
+                let end = polygon.points[i];
+
+                let previous_side_of_line =
+                    side_of_line_detection(start, end, ai_physics.prev_position);
+
+                if previous_side_of_line != polygon.collision_side {
+                    continue;
+                }
+
+                let (distance_sq, projection) =
+                    find_projection(start, end, ai_pos, ai_physics.radius);
+
+                let colliding_with_line = distance_sq <= radius_sq;
+                colliding_with_polygon = colliding_with_polygon || colliding_with_line;
+
+                let touching_line = distance_sq <= touch_threshold_sq;
+
+                if touching_line {
+                    let normal_dir = (ai_pos - projection).normalize_or_zero();
+
+                    // If the line is not above the AI
+                    if normal_dir.y >= CEILING_NORMAL_Y_THRESHOLD {
+                        // Add the normal dir to the AI's new normal
+                        new_ai_normal -= normal_dir;
+
+                        // If the AI is on a wall
+                        if normal_dir.x.abs() >= NORMAL_DOT_THRESHOLD {
+                            ai_physics.walled = normal_dir.x.signum() as i8;
+                            ai_physics.has_wall_jumped = false;
+                        }
+
+                        // If the AI is on the ground
+                        if normal_dir.y > GROUND_NORMAL_Y_THRESHOLD {
+                            ai_physics.grounded = true;
+                            ai_physics.walled = 0;
+                            ai_physics.has_wall_jumped = false;
+                        }
+                    }
+                }
+
+                if colliding_with_line {
+                    let mut delta = (ai_pos - projection).normalize_or_zero();
+
+                    if delta.y < CEILING_NORMAL_Y_THRESHOLD {
+                        ai_physics.velocity.y = 0.0;
+                    }
+
+                    // Use squared distance calculation, only compute sqrt when needed
+                    let distance = distance_sq.sqrt();
+                    delta *= ai_physics.radius - distance;
+
+                    if delta.x.abs() > adjustment.x.abs() {
+                        adjustment.x = delta.x;
+                    }
+                    if delta.y.abs() > adjustment.y.abs() {
+                        adjustment.y = delta.y;
+                    }
+                }
+            }
+
+            // Point-in-polygon check: if inside polygon and raycast intersects odd number of times
+            if colliding_with_polygon && intersect_counter % 2 == 1 {
+                ai_transform.translation = ai_physics.prev_position.extend(0.0);
+            }
+        }
+
+        // Update the AI's normal
+        new_ai_normal = new_ai_normal.normalize_or_zero();
+        ai_physics.normal = new_ai_normal;
+
+        // Remove the AI's velocity in the direction of the normal
+        let velocity_adjustment =
+            ai_physics.velocity.dot(new_ai_normal) * new_ai_normal;
+
+        ai_physics.velocity -= velocity_adjustment;
+
+        // Update the AI's position
+        ai_transform.translation += adjustment.extend(0.0);
+    }
 }
 
