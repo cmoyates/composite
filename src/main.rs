@@ -1,10 +1,11 @@
 mod collisions;
 mod level;
+mod utils;
 
 use ::bevy::prelude::*;
 use bevy::{app::AppExit, input::ButtonInput, window::PresentMode};
 use collisions::{s_collision, s_debug_collision, CollisionPlugin};
-use level::{generate_level_polygons, Aabb, Polygon};
+use level::{generate_level_polygons, Level};
 
 // Floating point comparison epsilon
 const EPSILON: f32 = 1e-6;
@@ -34,11 +35,6 @@ fn main() {
         // Exit system runs last to ensure clean shutdown
         .add_systems(Update, s_exit.after(s_render))
         .run();
-}
-
-#[derive(Resource)]
-pub struct Level {
-    pub polygons: Vec<Polygon>,
 }
 
 #[derive(Resource)]
@@ -157,11 +153,9 @@ pub fn s_init(mut commands: Commands) {
     {
         let grid_size = 32.0;
 
-        let level_polygons = generate_level_polygons(grid_size);
+        let level = generate_level_polygons(grid_size);
 
-        commands.insert_resource(Level {
-            polygons: level_polygons,
-        });
+        commands.insert_resource(level);
     }
 }
 

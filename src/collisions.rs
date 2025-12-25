@@ -11,7 +11,8 @@ use bevy::{
 };
 
 use crate::{
-    s_movement, Aabb, Level, Physics, Player, CEILING_NORMAL_Y_THRESHOLD,
+    level::{Aabb, Level},
+    s_movement, Physics, Player, CEILING_NORMAL_Y_THRESHOLD,
     GROUND_NORMAL_Y_THRESHOLD, MAX_GROUNDED_TIMER, MAX_WALLED_TIMER, NORMAL_DOT_THRESHOLD,
 };
 

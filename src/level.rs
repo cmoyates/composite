@@ -1,5 +1,7 @@
-use bevy::{color::Color, math::Vec2};
+use bevy::{color::Color, math::Vec2, prelude::Resource};
 use rand::Rng;
+
+use crate::utils::line_intersect;
 
 /// Axis-aligned bounding box for spatial optimization
 #[derive(Clone, Copy)]
@@ -40,15 +42,36 @@ pub struct Polygon {
     pub color: Color,
     /// Cached bounding box for spatial optimization
     pub aabb: Aabb,
+    /// Whether this polygon is a container (boundary polygon that contains the origin)
+    pub is_container: bool,
 }
+
+#[derive(Resource)]
+pub struct Level {
+    pub polygons: Vec<Polygon>,
+    pub grid_size: f32,
+    pub size: Vec2,
+    pub half_size: Vec2,
+}
+
+// Level generation constants
+const POINT_IN_POLYGON_RAY_DIRECTION: Vec2 = Vec2::new(2.0, 1.0);
+const POINT_IN_POLYGON_RAY_DISTANCE: f32 = 1000.0;
 
 const LEVEL_DATA: &[u8] = include_bytes!("../assets/level.json");
 
-pub fn generate_level_polygons(grid_size: f32) -> Vec<Polygon> {
+pub fn generate_level_polygons(grid_size: f32) -> Level {
     let mut rng = rand::rng();
 
     let res = std::str::from_utf8(LEVEL_DATA);
     let json_data: Vec<Vec<u32>> = serde_json::from_str(res.unwrap()).unwrap();
+
+    // Calculate level size
+    let size = Vec2::new(
+        json_data[0].len() as f32 * grid_size,
+        json_data.len() as f32 * grid_size,
+    );
+    let half_size = size / 2.0;
 
     let offset = Vec2::new(
         json_data[0].len() as f32 * -grid_size / 2.0,
@@ -412,16 +435,58 @@ pub fn generate_level_polygons(grid_size: f32) -> Vec<Polygon> {
         // Compute bounding box for spatial optimization
         let aabb = compute_polygon_aabb(&polygon_lines);
 
+        // Check if polygon is a container (contains the origin)
+        let is_container = point_in_polygon(&polygon_lines, Vec2::ZERO);
+
         // Add the polygon to the list of polygons
         polygons.push(Polygon {
             points: polygon_lines,
             collision_side,
             color,
             aabb,
+            is_container,
         });
     }
 
-    polygons
+    Level {
+        polygons,
+        grid_size,
+        size,
+        half_size,
+    }
+}
+
+/// Check if a point is inside a polygon using ray casting algorithm
+fn point_in_polygon(polygon_lines: &[Vec2], point: Vec2) -> bool {
+    let test_line_start = point;
+    let test_line_end = point + POINT_IN_POLYGON_RAY_DIRECTION * POINT_IN_POLYGON_RAY_DISTANCE;
+
+    let mut intersect_counter = 0;
+
+    for i in 1..polygon_lines.len() {
+        let start = polygon_lines[i - 1];
+        let end = polygon_lines[i];
+
+        let intersection = line_intersect(start, end, test_line_start, test_line_end);
+
+        if intersection.is_some() {
+            intersect_counter += 1;
+        }
+    }
+
+    // Also check the closing edge (from last point to first point)
+    if polygon_lines.len() > 2 {
+        let start = polygon_lines[polygon_lines.len() - 1];
+        let end = polygon_lines[0];
+
+        let intersection = line_intersect(start, end, test_line_start, test_line_end);
+
+        if intersection.is_some() {
+            intersect_counter += 1;
+        }
+    }
+
+    intersect_counter % 2 == 1
 }
 
 fn calculate_winding_order(vertices: &[Vec2]) -> f32 {
